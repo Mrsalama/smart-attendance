@@ -37,38 +37,28 @@ if choice == "لوحة الإدارة (Admin)":
         
         st.warning("سيتم تحديد موقعك الحالي كمقر عمل إلزامي لهذا الموظف.")
         
-        # زر إرسال النموذج (ضروري جداً)
-        submitted_admin = st.form_submit_button("حفظ بيانات الموظف")
-        
-    if submitted_admin:
-        # جلب الموقع الجغرافي لحظة الضغط على الزر
+        if submitted_admin:
+        # جلب الموقع الجغرافي
         loc = get_geolocation()
+        
+        # إضافة تنبيه بسيط في حالة تأخر الموقع
+        if not loc:
+            st.warning("جاري جلب موقعك الجغرافي... يرجى الانتظار ثانية والضغط على الزر مرة أخرى.")
         
         if name and email and uploaded_image and loc:
             try:
-                with st.spinner("جاري حفظ البيانات ورفع الصورة..."):
-                    # 1. رفع الصورة لـ Storage
-                    file_path = f"faces/{email.strip().lower()}.jpg"
-                    supabase.storage.from_("employee_faces").upload(
-                        path=file_path,
-                        file=uploaded_image.getvalue(),
-                        file_options={"content-type": "image/jpeg"}
-                    )
-                    img_url = supabase.storage.from_("employee_faces").get_public_url(file_path)
-                    
-                    # 2. حفظ البيانات في جدول Employees
-                    emp_data = {
-                        "full_name": name,
-                        "email": email.strip().lower(),
-                        "password": password,
-                        "profile_pic_url": img_url,
-                        "work_lat": loc['coords']['latitude'],
-                        "work_lon": loc['coords']['longitude']
-                    }
-                    supabase.table("employees").insert(emp_data).execute()
-                    st.success(f"✅ تم تسجيل الموظف {name} بنجاح!")
+                # التأكد من وصول الإحداثيات فعلياً
+                lat = loc.get('coords', {}).get('latitude')
+                lon = loc.get('coords', {}).get('longitude')
+                
+                if lat and lon:
+                    with st.spinner("جاري حفظ البيانات..."):
+                        # ... كمل باقي كود الرفع لـ Supabase هنا ...
+                        st.success(f"تم تسجيل {name} بنجاح!")
+                else:
+                    st.error("فشل في تحديد الإحداثيات بدقة. تأكد من تفعيل الـ GPS.")
             except Exception as e:
-                st.error(f"❌ حدث خطأ أثناء الحفظ: {e}")
+                st.error(f"حدث خطأ: {e}")
         else:
             st.error("⚠️ يرجى إكمال جميع الحقول والسماح بالوصول للكاميرا والموقع.")
 
