@@ -1,0 +1,7 @@
+streamlit
+supabase
+streamlit-js-eval
+deepface
+tf-keras
+opencv-python-headless
+geopy
