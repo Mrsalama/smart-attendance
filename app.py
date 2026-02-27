@@ -1,56 +1,59 @@
 import streamlit as st
 from supabase import create_client, Client
+from streamlit_js_eval import get_geolocation  # تأكد من هذا السطر
+from deepface import DeepFace
+from geopy.distance import geodesic
+import tempfile
+import os
 
-# تنظيف المفاتيح من أي مسافات أو رموز مخفية قد تسبب UnicodeEncodeError
-SUPABASE_URL = "https://vdklirvbgwdkyvehhlba.supabase.co".strip()
-SUPABASE_KEY = "sb_publishable_Jn4gl3IEq-FbtGTA0j5fhg_xhFCtEuR".strip()
-
+# جلب المفاتيح من الـ Secrets (تأكد أنك أضفتها في إعدادات Streamlit Cloud كما شرحنا)
 try:
-    # إنشاء اتصال بقاعدة البيانات
-    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    URL = st.secrets["SUPABASE_URL"]
+    KEY = st.secrets["SUPABASE_KEY"]
+    supabase: Client = create_client(URL, KEY)
 except Exception as e:
-    st.error(f"فشل الاتصال بـ Supabase: {e}")
+    st.error("خطأ في قراءة المفاتيح من Secrets. تأكد من إضافتها في إعدادات التطبيق.")
 
-# دالة للتحقق من المسافة الجغرافية
 def check_location(user_lat, user_lon, work_lat, work_lon):
-    distance = geodesic((user_lat, user_lon), (work_lat, work_lon)).meters
-    return distance
+    return geodesic((user_lat, user_lon), (work_lat, work_lon)).meters
 
-# --- واجهة التطبيق ---
 st.sidebar.title("نظام الحضور الذكي 🛡️")
 choice = st.sidebar.radio("انتقل إلى:", ["تسجيل الحضور (User)", "لوحة الإدارة (Admin)"])
 
-# ----------------- صفحة الإدارة (Admin) -----------------
 if choice == "لوحة الإدارة (Admin)":
     st.header("👨‍✈️ تسجيل موظف جديد")
     with st.form("admin_form"):
         name = st.text_input("الاسم الكامل")
         email = st.text_input("البريد الإلكتروني")
         password = st.text_input("كلمة المرور", type="password")
-        uploaded_image = st.camera_input("التقط الصورة المرجعية للوجه")
+        uploaded_image = st.camera_input("التقط الصورة المرجعية")
         
-        st.info("سيتم اعتماد موقعك الحالي كمقر عمل لهذا الموظف")
-        loc = get_geolocation()
+        st.info("سيتم طلب الموقع عند الضغط على زر الحفظ")
         
-        if st.form_submit_button("حفظ الموظف"):
+        # إضافة زر الإرسال المفقود داخل الفورم
+        submitted = st.form_submit_button("حفظ الموظف الجديد")
+        
+        if submitted:
+            # جلب الموقع عند الضغط على الزر فقط لتجنب الـ NameError
+            loc = get_geolocation()
             if name and email and uploaded_image and loc:
-                # رفع الصورة لـ Storage
-                file_path = f"faces/{email}.jpg"
-                supabase.storage.from_("employee_faces").upload(file_path, uploaded_image.getvalue())
-                img_url = supabase.storage.from_("employee_faces").get_public_url(file_path)
-                
-                # حفظ البيانات في الجدول
-                data = {
-                    "full_name": name, "email": email, "password": password,
-                    "profile_pic_url": img_url,
-                    "work_lat": loc['coords']['latitude'], "work_lon": loc['coords']['longitude']
-                }
-                supabase.table("employees").insert(data).execute()
-                st.success(f"تم تسجيل {name} بنجاح!")
+                try:
+                    file_path = f"faces/{email}.jpg"
+                    supabase.storage.from_("employee_faces").upload(file_path, uploaded_image.getvalue())
+                    img_url = supabase.storage.from_("employee_faces").get_public_url(file_path)
+                    
+                    data = {
+                        "full_name": name, "email": email, "password": password,
+                        "profile_pic_url": img_url,
+                        "work_lat": loc['coords']['latitude'], "work_lon": loc['coords']['longitude']
+                    }
+                    supabase.table("employees").insert(data).execute()
+                    st.success(f"تم تسجيل {name} بنجاح!")
+                except Exception as e:
+                    st.error(f"حدث خطأ أثناء الحفظ: {e}")
             else:
-                st.error("تأكد من إدخال كافة البيانات والسماح بالوصول للموقع.")
+                st.warning("تأكد من إكمال البيانات والسماح بالوصول للموقع.")
 
-# ----------------- صفحة الموظف (User) -----------------
 else:
     st.header("📱 بوابة تسجيل الحضور")
     email_login = st.text_input("أدخل بريدك الإلكتروني")
@@ -60,28 +63,26 @@ else:
         if res.data:
             user = res.data[0]
             st.write(f"مرحباً {user['full_name']}")
-            live_img = st.camera_input("التقط صورة للتحقق")
-            user_loc = get_geolocation()
+            live_img = st.camera_input("التحقق بالوجه")
             
-            if live_img and user_loc:
-                # التحقق من الموقع
-                dist = check_location(user_loc['coords']['latitude'], user_loc['coords']['longitude'], user['work_lat'], user['work_lon'])
-                
-                if dist <= 100: # مسموح بـ 100 متر
-                    with st.spinner("جاري مطابقة الوجه..."):
-                        tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
-                        tfile.write(live_img.read())
-                        try:
-                            # مطابقة الوجه مع الصورة المخزنة
-                            result = DeepFace.verify(tfile.name, user['profile_pic_url'], enforce_detection=False)
-                            if result['verified']:
-                                st.success("✅ تم التحقق بنجاح!")
-                                if st.button("تأكيد الحضور"):
-                                    supabase.table("attendance_logs").insert({"employee_id": user['id'], "status": "Check-in"}).execute()
-                                    st.balloons()
-                            else:
-                                st.error("❌ الوجه غير مطابق.")
-                        finally:
-                            os.remove(tfile.name)
-                else:
-                    st.error(f"📍 أنت خارج نطاق العمل بمسافة {int(dist)} متر.")
+            if live_img:
+                loc = get_geolocation()
+                if loc:
+                    dist = check_location(loc['coords']['latitude'], loc['coords']['longitude'], user['work_lat'], user['work_lon'])
+                    if dist <= 100:
+                        with st.spinner("جاري المطابقة..."):
+                            tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+                            tfile.write(live_img.read())
+                            try:
+                                result = DeepFace.verify(tfile.name, user['profile_pic_url'], enforce_detection=False)
+                                if result['verified']:
+                                    st.success("✅ تم التحقق!")
+                                    if st.button("تأكيد العملية"):
+                                        supabase.table("attendance_logs").insert({"employee_id": user['id'], "status": "Check-in"}).execute()
+                                        st.balloons()
+                                else:
+                                    st.error("❌ الوجه غير مطابق.")
+                            finally:
+                                os.remove(tfile.name)
+                    else:
+                        st.error(f"📍 أنت بعيد عن العمل بمسافة {int(dist)} متر.")
