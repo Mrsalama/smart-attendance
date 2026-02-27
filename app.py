@@ -58,9 +58,9 @@ if choice == "لوحة الإدارة (Admin)":
                 st.error(f"❌ خطأ في الحفظ: {e}")
 
     with tab2:
-        st.subheader("سجلات الحضور الحالية")
+        st.subheader("📊 سجلات الحضور الحالية")
         try:
-            # هنا الكود يستخدم العلاقة (Foreign Key) لجلب الأسماء
+            # جلب البيانات مع الأسماء بفضل الربط الذي قمت به
             response = supabase.table("attendance_logs").select("timestamp, status, employees(full_name)").execute()
             if response.data:
                 data_list = []
@@ -74,9 +74,9 @@ if choice == "لوحة الإدارة (Admin)":
                 df = pd.DataFrame(data_list)
                 st.dataframe(df, use_container_width=True)
                 csv = df.to_csv(index=False).encode('utf-8-sig')
-                st.download_button(label="📥 تحميل التقرير", data=csv, file_name='report.csv', mime='text/csv')
+                st.download_button(label="📥 تحميل التقرير", data=csv, file_name='attendance_report.csv', mime='text/csv')
             else:
-                st.info("لا توجد سجلات بعد.")
+                st.info("لا توجد سجلات بعد. جرب تسجيل حضورك من بوابة الموظف أولاً.")
         except Exception as e:
             st.error(f"تعذر جلب التقارير: {e}")
 
