@@ -5,82 +5,92 @@ from deepface import DeepFace
 from geopy.distance import geodesic
 import tempfile
 import os
+import pandas as pd # مكتبة لمعالجة البيانات وتصديرها
 
-# 1. إعداد الاتصال بـ Supabase من خلال الـ Secrets
+# 1. إعداد الاتصال بـ Supabase
 try:
     URL = st.secrets["SUPABASE_URL"].strip()
     KEY = st.secrets["SUPABASE_KEY"].strip()
     supabase: Client = create_client(URL, KEY)
 except Exception as e:
-    st.error("⚠️ فشل في قراءة المفاتيح. تأكد من إضافتها في Streamlit Secrets.")
+    st.error("⚠️ فشل في قراءة المفاتيح.")
     st.stop()
 
 def check_location(user_lat, user_lon, work_lat, work_lon):
     return geodesic((user_lat, user_lon), (work_lat, work_lon)).meters
 
-# --- واجهة التطبيق ---
-st.set_page_config(page_title="نظام الحضور الذكي", layout="centered")
+st.set_page_config(page_title="نظام الحضور الذكي", layout="wide") # جعل الصفحة عريضة لعرض الجداول
 st.sidebar.title("نظام الحضور الذكي 🛡️")
 choice = st.sidebar.radio("القائمة:", ["تسجيل الحضور (User)", "لوحة الإدارة (Admin)"])
 
-# ----------------- أولاً: صفحة الإدارة (Admin) -----------------
+# ----------------- صفحة الإدارة (Admin) -----------------
 if choice == "لوحة الإدارة (Admin)":
-    st.header("👨‍✈️ تسجيل موظف جديد")
+    st.header("👨‍✈️ لوحة تحكم المسؤول")
     
-    # جلب الموقع مسبقاً لضمان وجوده
-    current_loc = get_geolocation()
+    tab1, tab2 = st.tabs(["➕ تسجيل موظف", "📊 تقارير الحضور"])
     
-    with st.form("admin_reg_form", clear_on_submit=True):
-        name = st.text_input("الاسم الكامل")
-        email = st.text_input("البريد الإلكتروني")
-        password = st.text_input("كلمة المرور", type="password")
-        uploaded_image = st.camera_input("التقط الصورة المرجعية")
-        
-        st.warning("سيتم تحديد موقعك الحالي كمقر عمل إلزامي.")
-        
-        if current_loc:
-            st.success("📍 تم تحديد موقعك الجغرافي.")
-        else:
-            st.info("📡 جاري البحث عن موقعك...")
+    with tab1:
+        current_loc = get_geolocation()
+        with st.form("admin_reg_form", clear_on_submit=True):
+            name = st.text_input("الاسم الكامل")
+            email = st.text_input("البريد الإلكتروني")
+            password = st.text_input("كلمة المرور", type="password")
+            uploaded_image = st.camera_input("التقط الصورة المرجعية")
+            submitted = st.form_submit_button("حفظ الموظف")
             
-        submitted = st.form_submit_button("حفظ الموظف")
-        
-    if submitted:
-        if name and email and uploaded_image and current_loc:
+        if submitted and name and email and uploaded_image and current_loc:
             try:
-                with st.spinner("جاري الحفظ..."):
-                    email_clean = email.strip().lower()
-                    file_path = f"{email_clean}.jpg"
-                    
-                    # 1. رفع الصورة (إدارة الخطأ بشكل منفصل)
-                    try:
-                        supabase.storage.from_("employee_faces").upload(
-                            path=file_path,
-                            file=uploaded_image.getvalue(),
-                            file_options={"content-type": "image/jpeg", "upsert": "true"}
-                        )
-                    except:
-                        pass # إذا كانت الصورة موجودة مسبقاً
-                        
-                    img_url = supabase.storage.from_("employee_faces").get_public_url(file_path)
-                    
-                    # 2. حفظ البيانات في جدول الموظفين
-                    emp_data = {
-                        "full_name": name,
-                        "email": email_clean,
-                        "password": password,
-                        "profile_pic_url": img_url,
-                        "work_lat": current_loc['coords']['latitude'],
-                        "work_lon": current_loc['coords']['longitude']
-                    }
-                    supabase.table("employees").insert(emp_data).execute()
-                    st.success(f"✅ تم تسجيل الموظف {name} بنجاح!")
+                email_clean = email.strip().lower()
+                file_path = f"{email_clean}.jpg"
+                supabase.storage.from_("employee_faces").upload(path=file_path, file=uploaded_image.getvalue(), file_options={"content-type": "image/jpeg", "upsert": "true"})
+                img_url = supabase.storage.from_("employee_faces").get_public_url(file_path)
+                
+                emp_data = {
+                    "full_name": str(name),
+                    "email": str(email_clean),
+                    "password": str(password),
+                    "profile_pic_url": str(img_url),
+                    "work_lat": float(current_loc['coords']['latitude']),
+                    "work_lon": float(current_loc['coords']['longitude'])
+                }
+                supabase.table("employees").insert(emp_data).execute()
+                st.success(f"✅ تم تسجيل الموظف {name} بنجاح!")
             except Exception as e:
                 st.error(f"❌ خطأ: {e}")
-        else:
-            st.error("⚠️ يرجى إكمال الحقول والتأكد من تفعيل الموقع.")
 
-# ----------------- ثانياً: صفحة الموظف (User) -----------------
+    with tab2:
+        st.subheader("سجلات الحضور الحالية")
+        # جلب البيانات من Supabase مع ربط الجداول
+        try:
+            # نقوم بجلب سجلات الحضور ودمجها مع أسماء الموظفين
+            response = supabase.table("attendance_logs").select("created_at, status, employees(full_name, email)").execute()
+            if response.data:
+                # تحويل البيانات إلى جدول DataFrame
+                data_list = []
+                for entry in response.data:
+                    data_list.append({
+                        "الاسم": entry['employees']['full_name'],
+                        "الإيميل": entry['employees']['email'],
+                        "الحالة": entry['status'],
+                        "الوقت والتاريخ": entry['created_at']
+                    })
+                df = pd.DataFrame(data_list)
+                st.dataframe(df, use_container_width=True)
+                
+                # زر التحميل لملف CSV
+                csv = df.to_csv(index=False).encode('utf-8-sig')
+                st.download_button(
+                    label="📥 تحميل التقرير كـ Excel (CSV)",
+                    data=csv,
+                    file_name='attendance_report.csv',
+                    mime='text/csv',
+                )
+            else:
+                st.info("لا توجد سجلات حضور حتى الآن.")
+        except Exception as e:
+            st.error(f"تعذر جلب التقارير: {e}")
+
+# ----------------- صفحة الموظف (User) -----------------
 else:
     st.header("📱 بوابة تسجيل الحضور")
     user_loc = get_geolocation()
@@ -98,7 +108,6 @@ else:
             
             if live_img and user_loc:
                 dist = check_location(user_loc['coords']['latitude'], user_loc['coords']['longitude'], user['work_lat'], user['work_lon'])
-                
                 if dist <= 100:
                     with st.spinner("جاري مطابقة الوجه..."):
                         tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
@@ -107,11 +116,8 @@ else:
                             result = DeepFace.verify(tfile.name, user['profile_pic_url'], enforce_detection=False)
                             if result['verified']:
                                 st.success("✅ تم التحقق بنجاح!")
-                                try:
-                                    supabase.table("attendance_logs").insert({"employee_id": user['id'], "status": "Check-in"}).execute()
-                                    st.balloons()
-                                except:
-                                    st.info("تم التحقق، ولكن واجهنا مشكلة في تسجيل اللوج (تأكد من تعطيل RLS لجدول attendance_logs).")
+                                supabase.table("attendance_logs").insert({"employee_id": user['id'], "status": "Check-in"}).execute()
+                                st.balloons()
                             else:
                                 st.error("❌ الوجه غير مطابق.")
                         finally:
