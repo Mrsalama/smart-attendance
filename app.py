@@ -15,11 +15,12 @@ except Exception as e:
     st.error("⚠️ خطأ في قراءة المفاتيح من Secrets. تأكد من إضافتها في إعدادات Streamlit Cloud.")
     st.stop()
 
-# دالة حساب المسافة
+# دالة حساب المسافة الجغرافية
 def check_location(user_lat, user_lon, work_lat, work_lon):
     return geodesic((user_lat, user_lon), (work_lat, work_lon)).meters
 
-# --- واجهة التطبيق ---
+# --- إعداد واجهة التطبيق ---
+st.set_page_config(page_title="نظام الحضور الذكي", layout="centered")
 st.sidebar.title("نظام الحضور الذكي 🛡️")
 st.sidebar.info("مرحباً بك يا أستاذ محمد")
 choice = st.sidebar.radio("انتقل إلى:", ["تسجيل الحضور (User)", "لوحة الإدارة (Admin)"])
@@ -28,24 +29,32 @@ choice = st.sidebar.radio("انتقل إلى:", ["تسجيل الحضور (User)
 if choice == "لوحة الإدارة (Admin)":
     st.header("👨‍✈️ لوحة تحكم المسؤول")
     
+    # طلب الموقع في بداية الصفحة ليكون جاهزاً ومتاحاً عند الضغط على الزر
+    current_loc = get_geolocation()
+    
     with st.form("admin_reg_form"):
         name = st.text_input("الاسم الكامل للموظف")
         email = st.text_input("البريد الإلكتروني")
         password = st.text_input("كلمة المرور", type="password")
-        uploaded_image = st.camera_input("التقط الصورة المرجعية")
+        uploaded_image = st.camera_input("التقط الصورة المرجعية لوجه الموظف")
         
-        st.warning("سيتم تحديد موقعك الحالي كمقر عمل لهذا الموظف.")
+        st.warning("سيتم تحديد موقعك الحالي كمقر عمل إلزامي لهذا الموظف.")
+        
+        # عرض حالة الموقع للمسؤول لضمان نجاح الجلب
+        if current_loc:
+            st.success("📍 تم تحديد موقعك الجغرافي بنجاح.")
+        else:
+            st.info("📡 جاري البحث عن موقعك... يرجى الانتظار ثانية حتى تظهر العلامة الخضراء.")
+            
         submitted_admin = st.form_submit_button("حفظ بيانات الموظف")
         
     if submitted_admin:
-        # استدعاء الموقع الجغرافي داخل كتلة الشرط مع إزاحة صحيحة
-        loc = get_geolocation()
-        
-        if name and email and uploaded_image and loc:
+        if name and email and uploaded_image and current_loc:
             try:
-                with st.spinner("جاري حفظ البيانات..."):
-                    # رفع الصورة
-                    file_path = f"faces/{email.strip().lower()}.jpg"
+                with st.spinner("جاري حفظ البيانات ورفع الصورة..."):
+                    # 1. رفع الصورة لـ Storage
+                    email_clean = email.strip().lower()
+                    file_path = f"faces/{email_clean}.jpg"
                     supabase.storage.from_("employee_faces").upload(
                         path=file_path,
                         file=uploaded_image.getvalue(),
@@ -53,68 +62,83 @@ if choice == "لوحة الإدارة (Admin)":
                     )
                     img_url = supabase.storage.from_("employee_faces").get_public_url(file_path)
                     
-                    # حفظ في القاعدة
+                    # 2. حفظ البيانات في جدول Employees
                     emp_data = {
                         "full_name": name,
-                        "email": email.strip().lower(),
+                        "email": email_clean,
                         "password": password,
                         "profile_pic_url": img_url,
-                        "work_lat": loc['coords']['latitude'],
-                        "work_lon": loc['coords']['longitude']
+                        "work_lat": current_loc['coords']['latitude'],
+                        "work_lon": current_loc['coords']['longitude']
                     }
                     supabase.table("employees").insert(emp_data).execute()
                     st.success(f"✅ تم تسجيل الموظف {name} بنجاح!")
             except Exception as e:
-                st.error(f"❌ حدث خطأ: {e}")
+                st.error(f"❌ حدث خطأ أثناء الحفظ: {e}")
         else:
-            st.error("⚠️ يرجى التأكد من ملء الحقول والسماح بالوصول للموقع والكاميرا.")
+            st.error("⚠️ يرجى إكمال جميع الحقول والتأكد من ظهور علامة الموقع الخضراء.")
 
 # ----------------- ثانياً: صفحة الموظف (User) -----------------
 else:
     st.header("📱 بوابة تسجيل الحضور")
     
+    # جلب الموقع مسبقاً أيضاً في صفحة الموظف
+    user_current_loc = get_geolocation()
+    
     with st.form("user_login_form"):
-        email_input = st.text_input("أدخل بريدك الإلكتروني")
-        search_button = st.form_submit_button("بدء التحقق")
+        email_input = st.text_input("أدخل بريدك الإلكتروني المسجل")
+        search_button = st.form_submit_button("بدء عملية التحقق")
     
     if search_button and email_input:
-        res = supabase.table("employees").select("*").eq("email", email_input.strip().lower()).execute()
+        with st.spinner("جاري البحث عن بياناتك..."):
+            res = supabase.table("employees").select("*").eq("email", email_input.strip().lower()).execute()
             
         if res.data:
             user = res.data[0]
-            st.success(f"أهلاً {user['full_name']}")
+            st.success(f"أهلاً {user['full_name']}! يرجى إكمال التحقق أدناه:")
             
-            live_img = st.camera_input("التقط صورة لوجهك")
-            user_loc = get_geolocation()
+            # التقاط الصورة الحية
+            live_img = st.camera_input("التقط صورة لوجهك الآن")
             
-            if live_img and user_loc:
+            if live_img and user_current_loc:
+                # 1. التحقق من الموقع الجغرافي (Geofencing)
                 dist = check_location(
-                    user_loc['coords']['latitude'], 
-                    user_loc['coords']['longitude'], 
+                    user_current_loc['coords']['latitude'], 
+                    user_current_loc['coords']['longitude'], 
                     user['work_lat'], 
                     user['work_lon']
                 )
                 
-                if dist <= 100:
-                    with st.spinner("جاري مطابقة الوجه..."):
+                if dist <= 100: # النطاق المسموح 100 متر
+                    st.info("📍 الموقع الجغرافي صحيح.")
+                    
+                    with st.spinner("جاري مطابقة الوجه بالذكاء الاصطناعي..."):
                         tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
                         tfile.write(live_img.read())
+                        
                         try:
+                            # مقارنة الصور باستخدام DeepFace
                             result = DeepFace.verify(
                                 img1_path = tfile.name,
                                 img2_path = user['profile_pic_url'],
                                 enforce_detection = False
                             )
+                            
                             if result['verified']:
-                                st.success("✅ تم التحقق بنجاح!")
+                                st.success("✅ تم التحقق من الهوية بنجاح!")
+                                # تسجيل الحضور في جدول Logs
                                 log_data = {"employee_id": user['id'], "status": "Check-in"}
                                 supabase.table("attendance_logs").insert(log_data).execute()
                                 st.balloons()
                             else:
-                                st.error("❌ الوجه غير مطابق.")
+                                st.error("❌ عذراً، لم يتطابق الوجه. حاول مرة أخرى.")
+                        except Exception as e:
+                            st.error(f"⚠️ خطأ في تحليل الصورة: {e}")
                         finally:
                             os.remove(tfile.name)
                 else:
-                    st.error(f"📍 موقعك غير صحيح! المسافة: {int(dist)} متر.")
+                    st.error(f"📍 موقعك غير صحيح! أنت بعيد عن العمل بمسافة {int(dist)} متر.")
+            elif not user_current_loc:
+                st.warning("📡 يرجى السماح بالوصول للموقع والانتظار ثانية لتحديده.")
         else:
-            st.error("❌ البريد غير مسجل.")
+            st.error("❌ هذا البريد الإلكتروني غير مسجل.")
