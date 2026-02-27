@@ -1,16 +1,15 @@
 import streamlit as st
 from supabase import create_client, Client
-from streamlit_js_eval import get_geolocation
-from deepface import DeepFace
-from geopy.distance import geodesic
-import tempfile
-import os
 
-# 1. إعدادات الاتصال بـ Supabase
-# استبدل القيم هنا ببياناتك التي حصلت عليها
-URL = "https://vdklirvbgwdkyvehhlba.supabase.co"
-KEY = "ضع_هنا_الـ_Anon_Key_الخاص_بك"
-supabase: Client = create_client(URL, KEY)
+# تنظيف المفاتيح من أي مسافات أو رموز مخفية قد تسبب UnicodeEncodeError
+SUPABASE_URL = "https://vdklirvbgwdkyvehhlba.supabase.co".strip()
+SUPABASE_KEY = "sb_publishable_Jn4gl3IEq-FbtGTA0j5fhg_xhFCtEuR".strip()
+
+try:
+    # إنشاء اتصال بقاعدة البيانات
+    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+except Exception as e:
+    st.error(f"فشل الاتصال بـ Supabase: {e}")
 
 # دالة للتحقق من المسافة الجغرافية
 def check_location(user_lat, user_lon, work_lat, work_lon):
