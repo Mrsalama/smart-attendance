@@ -13,15 +13,15 @@ try:
     KEY = st.secrets["SUPABASE_KEY"].strip()
     supabase: Client = create_client(URL, KEY)
 except Exception as e:
-    st.error("⚠️ فشل في قراءة المفاتيح.")
+    st.error("⚠️ فشل في قراءة مفاتيح الاتصال. تأكد من إعداد Secrets.")
     st.stop()
 
 def check_location(user_lat, user_lon, work_lat, work_lon):
     return geodesic((user_lat, user_lon), (work_lat, work_lon)).meters
 
 st.set_page_config(page_title="نظام الحضور الذكي", layout="wide")
-st.sidebar.title("نظام الحضور الذكي 🛡️")
-choice = st.sidebar.radio("القائمة:", ["تسجيل الحضور (User)", "لوحة الإدارة (Admin)"])
+st.sidebar.title("القائمة 🛡️")
+choice = st.sidebar.radio("انتقل إلى:", ["تسجيل الحضور (User)", "لوحة الإدارة (Admin)"])
 
 # ----------------- صفحة الإدارة (Admin) -----------------
 if choice == "لوحة الإدارة (Admin)":
@@ -60,25 +60,33 @@ if choice == "لوحة الإدارة (Admin)":
     with tab2:
         st.subheader("📊 سجلات الحضور الحالية")
         try:
-            # جلب البيانات مع الأسماء بفضل الربط الذي قمت به
-            response = supabase.table("attendance_logs").select("timestamp, status, employees(full_name)").execute()
+            # طلب البيانات مع جلب الاسم والوقت بمرونة
+            response = supabase.table("attendance_logs").select("*, employees(full_name)").execute()
+            
             if response.data:
                 data_list = []
                 for entry in response.data:
-                    emp_name = entry.get('employees', {}).get('full_name', 'غير معروف')
+                    emp_info = entry.get('employees')
+                    full_name = emp_info.get('full_name', 'غير معروف') if emp_info else "بانتظار الربط"
+                    
+                    # البحث عن الوقت بأي مسمى متاح
+                    time_val = entry.get('created_at') or entry.get('timestamp') or "لا يوجد وقت"
+                    
                     data_list.append({
-                        "اسم الموظف": emp_name,
-                        "الحالة": entry.get('status'),
-                        "وقت العملية": entry.get('timestamp')
+                        "اسم الموظف": full_name,
+                        "الحالة": entry.get('status', 'Check-in'),
+                        "الوقت": time_val
                     })
+                
                 df = pd.DataFrame(data_list)
                 st.dataframe(df, use_container_width=True)
+                
                 csv = df.to_csv(index=False).encode('utf-8-sig')
-                st.download_button(label="📥 تحميل التقرير", data=csv, file_name='attendance_report.csv', mime='text/csv')
+                st.download_button(label="📥 تحميل التقرير CSV", data=csv, file_name='attendance.csv', mime='text/csv')
             else:
-                st.info("لا توجد سجلات بعد. جرب تسجيل حضورك من بوابة الموظف أولاً.")
+                st.info("لا توجد سجلات حالياً.")
         except Exception as e:
-            st.error(f"تعذر جلب التقارير: {e}")
+            st.error(f"حدث خطأ في عرض التقارير: {e}")
 
 # ----------------- صفحة الموظف (User) -----------------
 else:
@@ -92,17 +100,17 @@ else:
         if res.data:
             user = res.data[0]
             st.success(f"أهلاً {user['full_name']}")
-            live_img = st.camera_input("التحقق بالوجه")
+            live_img = st.camera_input("التقط صورة للتحقق")
             if live_img and user_loc:
                 dist = check_location(user_loc['coords']['latitude'], user_loc['coords']['longitude'], user['work_lat'], user['work_lon'])
                 if dist <= 100:
-                    with st.spinner("جاري المطابقة..."):
+                    with st.spinner("جاري مطابقة الوجه..."):
                         tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
                         tfile.write(live_img.read())
                         try:
                             result = DeepFace.verify(tfile.name, user['profile_pic_url'], enforce_detection=False)
                             if result['verified']:
-                                st.success("✅ تم التحقق!")
+                                st.success("✅ تم التحقق بنجاح!")
                                 supabase.table("attendance_logs").insert({"employee_id": user['id'], "status": "Check-in"}).execute()
                                 st.balloons()
                             else:
@@ -110,4 +118,6 @@ else:
                         finally:
                             os.remove(tfile.name)
                 else:
-                    st.error(f"📍 موقعك غير صحيح.")
+                    st.error(f"📍 موقعك بعيد عن العمل ({int(dist)} متر).")
+        else:
+            st.error("📧 هذا الإيميل غير مسجل.")
